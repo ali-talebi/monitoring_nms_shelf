@@ -1,0 +1,334 @@
+import multiprocessing
+import threading
+import time
+import datetime
+import json
+from snmp import SnmpInterface
+from rest import RestInterface
+from ssh import sshInterface
+from data.envs.TML_env import DICT__ENV
+
+host = DICT__ENV['server']['server_host']
+username = DICT__ENV['server']['nms_username']
+password = DICT__ENV['server']['nms_password']
+client_version = DICT__ENV['server']['rest_client-version']
+contenttype = DICT__ENV['server']['rest_Content-Type']
+authenticate_url = DICT__ENV['server']['authenticate_url']
+oid_is_alive_node = '.1.3.6.1.4.1.54964.2.1.1.1.6'
+
+
+class create_request_snmp_and_rest():
+
+    def __init__(self, src_ip, server_nms_ip):
+        self.src_ip = src_ip
+        self.server_nms_ip = server_nms_ip
+        self.node1 = None
+        self.node2 = None
+        self.zone1 = None
+        self.zone2 = None
+        self.zone_name1 = None
+        self.zone_name2 = None
+
+        self.ip_shelf_a = "172.17.33.1"
+        self.ip_shelf_b = "172.17.40.1"
+
+    def request_snmp_get(self, dest_ip, request_oid):
+        reciver_snmp = SnmpInterface(ip=dest_ip, community='public', version='2c')
+        result = reciver_snmp.snmp_get(request_oid)['value']
+        return result
+
+    def request_rest_get(self, req_url):
+        rest = RestInterface(host, username, password, client_version, contenttype, authenticate_url)
+        result = rest.get_request(req_url)
+        return result
+
+    def request_rest_post_add_node(self, *data):
+        req_url = '/sina/topology/zone'
+        rest = RestInterface(host, username, password, client_version, contenttype, authenticate_url)
+        res = rest.post_request(req_url, data[0])
+        zone_id1 = json.loads(res.text)['id']
+        zone_name1 = json.loads(res.text)['zoneName']
+
+        self.zone1 = zone_id1
+        self.zone_name1 = zone_name1
+
+        res = rest.post_request(req_url, data[1])
+        zone_id2 = json.loads(res.text)['id']
+        zone_name2 = json.loads(res.text)['zoneName']
+        self.zone2 = zone_id2
+        self.zone_name2 = zone_name2
+        req_add_Node = '/sina/topology/node/default-ip'
+
+        # node_ID_NODE_A = DICT__ENV['nodeA']['index']
+        data_add_nodeA = {
+            "latitude": 35,
+            "longitude": 55,
+            "nodeDescription": "string",
+            "nodeName": "NODE",
+            "nodeID": int(289),
+            "type": "GENERAL",
+            "zoneID": int(zone_id1)}
+        rest.post_request(req_add_Node, data_add_nodeA)
+        self.node1 = 289
+
+        ### add NodeB
+        node_ID_NODE_B = DICT__ENV['nodeB']['index']
+        data_add_nodeB = {
+            "latitude": 35,
+            "longitude": 50,
+            "nodeDescription": "string",
+            "nodeName": "NODE",
+            "nodeID": int(296),
+            "type": "GENERAL",
+            "zoneID": int(zone_id2)}
+        res = rest.post_request(req_add_Node, data_add_nodeB)
+        self.node2 = 296
+
+    def request_ssh_to_shelf(self, select_shelf):
+        ip_selected_shelf = None
+        if select_shelf == 1:
+            ip_selected_shelf = self.ip_shelf_a
+
+        elif select_shelf == 2:
+            ip_selected_shelf = self.ip_shelf_b
+
+        ssh_to_shelf = sshInterface(ip=ip_selected_shelf, username="root", password="root")
+        ssh_to_shelf.ssh_connect()
+        return ssh_to_shelf
+
+    def request_ssh_south_bound(self):
+        ssh_to_nms_server = sshInterface(ip=self.server_nms_ip, username="root", password="alitalebi")
+        ssh_to_nms_server.ssh_connect()
+        return ssh_to_nms_server
+
+    def delete_zone_node(self):
+        rest = RestInterface(host, username, password, client_version, contenttype, authenticate_url)
+        rest.delete_request(f'/sina/topology/node/{self.node1}?name=NODE')
+        rest.delete_request(f'/sina/topology/node/{self.node2}?name=NODE')
+        rest.delete_request(f'/sina/topology/zone/{self.zone1}?name={self.zone_name1}')
+        rest.delete_request(f'/sina/topology/zone/{self.zone2}?name={self.zone_name2}')
+
+
+def writer_request_snmp(obj_snmp, dest_ip, request_oid, shelf_id):
+    try:
+        result = obj_snmp.request_snmp_get(dest_ip=dest_ip, request_oid=f"{request_oid}.{shelf_id}")
+        timestamp = time.time()
+        dt_object = datetime.datetime.fromtimestamp(timestamp)
+        formatted_date = dt_object.strftime("%Y-%m-%d - %H:%M:%S")
+        loger_file.write(f"{formatted_date}||result request snmp to shelf {shelf_id} for alive : ||{result}\n")
+        return result
+    except:
+        timestamp = time.time()
+        dt_object = datetime.datetime.fromtimestamp(timestamp)
+        formatted_date = dt_object.strftime("%Y-%m-%d - %H:%M:%S")
+        loger_file.write(f"{formatted_date}||result request snmp to shelf {shelf_id} for alive : ||{0}\n")
+        return 0
+
+
+def create_request_rest(obj_snmp, req_url, node_id):
+    req_url = f'{req_url}/{node_id}'
+    result_answer = 0
+    try:
+        result = obj_snmp.request_rest_get(req_url)
+        data = json.loads(result.__dict__['_content'].decode('utf-8'))
+        timestamp = time.time()
+        dt_object = datetime.datetime.fromtimestamp(timestamp)
+        formatted_date = dt_object.strftime("%Y-%m-%d - %H:%M:%S")
+        loger_file2.write(f"{formatted_date}||result rest ||{node_id}||{data['available']}\n")
+        return data['available']
+    except:
+        timestamp = time.time()
+        dt_object = datetime.datetime.fromtimestamp(timestamp)
+        formatted_date = dt_object.strftime("%Y-%m-%d - %H:%M:%S")
+        loger_file2.write(f"{formatted_date}||result rest ||{node_id}||{result_answer}\n")
+        return 0
+
+
+def listening_to_south_bound(obj_snmp):
+    ssh_to_server = obj_snmp.request_ssh_south_bound()
+    channel_south_bound = ssh_to_server.invoke_shell()
+    return channel_south_bound
+
+
+def create_log_south_bound(text):
+    loger_file.write(f"\n log south band \n {text}\n")
+
+
+def create_status_snmp_shelf_rest_shelf(status_snmp_shelf_a, status_rest_shelf_a):
+    try:
+        timestamp = time.time()
+        dt_object = datetime.datetime.fromtimestamp(timestamp)
+        formatted_date = dt_object.strftime("%Y-%m-%d - %H:%M:%S")
+        action1 = f"{formatted_date}||status-snmp-sehlf:{status_snmp_shelf_a} -- status-rest-shelf:{status_rest_shelf_a}\n"
+        loger_file3.write(action1)
+    except:
+        pass
+
+
+def getter_information_status_app_shelf(obj, id_select):
+    try:
+        ssh_shelf = obj.request_ssh_to_shelf(id_select)
+        loger_file3.write(f"shelf ip is : {ssh_shelf.__dict__}\n")
+        total_commands = ["ps fax | grep svcman", "ps fax | grep hwman", "ps fax | grep snmp", "psx fax | grep brkd",
+                          "ps fax | grep sdpd"]
+
+        for cmd in total_commands:
+            result = ssh_shelf.exec(cmd)
+            loger_file3.write(f"{result}\n")
+        ssh_shelf.close()
+        loger_file3.write(" --- end of result apps --- \n")
+
+    except Exception as e:
+        loger_file3.write(f"{e} \n")
+
+
+def getter_information_status_service_south_bound(obj):
+    try:
+        loger_file3.write(f" ------- cheking replicas of south bound ------- \n")
+        ssh_server = obj.request_ssh_south_bound()
+        result = ssh_server.exec("docker service ls | grep dwdm_south-bound")
+        loger_file3.write(f"{result} \n")
+        loger_file3.write(" --- end of result replica south bound --- \n")
+    except Exception as e:
+        ssh_server.close()
+
+
+def getter_information_rest_staus_node(obj):
+    try:
+        ssh_server = obj.request_ssh_south_bound()
+        curl_cmd = (
+            f"curl -X POST http://192.168.32.56:8085/discover/node/availability "
+            "-H \"Content-Type: application/json\" "
+            "-d '["
+            "{\"node\":289,\"rack\":null,\"shelf\":null,\"slot\":null,\"module\":null,\"level\":\"NODE\"},"
+            "{\"node\":296,\"rack\":null,\"shelf\":null,\"slot\":null,\"module\":null,\"level\":\"NODE\"}"
+            "]'"
+        )
+        result_curl = ssh_server.exec(curl_cmd)
+        loger_file3.write(result_curl)
+
+    except:
+        ssh_server.close()
+
+
+def getter_information_shelf_log_snmp(obj, id_select):
+    try:
+        ssh_shelf = obj.request_ssh_to_shelf(id_select)
+        result = ssh_shelf.exec("tail -n 10 /mnt/metadata/log/snmp.log")
+
+        total_snmps_log = result.split('\n')
+        try:
+            loger_file3.write(" --- log snmp --- \n")
+            for line in total_snmps_log:
+                loger_file3.write(f"{line}\n")
+            ssh_shelf.close()
+            loger_file3.write(" --- end of snmp log --- \n")
+        except Exception as e:
+            print(e)
+
+        ssh_shelf.close()
+    except Exception as e:
+        loger_file3.write(f"{e}\n")
+
+
+def getter_information_show_cards_of_shelf(obj, id_select):
+    try:
+        loger_file3.write(f" --- show cards of shelf {id_select} \n ")
+        out_put_show_cards = ""
+        ssh_shelf = obj.request_ssh_to_shelf(id_select)
+        ssh_shelf2 = ssh_shelf.ssh_connect()
+        channel = ssh_shelf2.invoke_shell()
+        channel.sendall("sina-cli\n")
+        time.sleep(1)
+        channel.sendall("show cards\n")
+        time.sleep(1)
+
+        data = channel.recv(1024).decode("utf-8")
+        out_put_show_cards = data.split("\n")
+        for line in out_put_show_cards:
+            try:
+                loger_file3.write(f"{line}\n")
+            except:
+                pass
+        channel.close()
+        loger_file3.write(f" --- end of show cards of shelf --- \n ")
+    except Exception as e:
+        loger_file3.write(f"{e}\n")
+
+
+def getter_information_log_service_south_bound(obj):
+    try:
+        ssh_server = obj.request_ssh_south_bound()
+        time.sleep(40)
+        result = ssh_server.exec("docker service logs --tail 10  dwdm_south-bound\n")
+
+        ssh_server.close()
+        loger_file3.write(f"{result}\n")
+    except:
+        ssh_server.close()
+
+
+if __name__ == "__main__":
+    data_add_zone1 = {
+        "description": "0-th-zone",
+        "zoneName": f"0-th-zone"
+    }
+    data_add_zone2 = {
+        "description": "1-th-zone",
+        "zoneName": f"1-th-zone"
+    }
+    c1 = create_request_snmp_and_rest('192.168.32.45', '192.168.32.56')
+    c1.request_rest_post_add_node(data_add_zone1, data_add_zone2)
+    while 1:
+        for i in range(2):
+            try:
+                with open('log_monitoring_shelf_server.txt', 'a', encoding='utf-8') as loger_file, \
+                        open('log_monitoring_shelf_server2.txt', 'a', encoding='utf-8') as loger_file2, \
+                        open('log_monitoring_shelf_server3.txt', 'a', encoding='utf-8') as loger_file3:
+                    status_snmp_shelf_a, status_snmp_shelf_b = None, None
+                    status_rest_shelf_a, status_rest_shelf_b = None, None
+
+                    try:
+                        status_snmp_shelf_a = writer_request_snmp(c1, "172.17.33.1", oid_is_alive_node, 289)
+                        status_rest_shelf_a = create_request_rest(c1, req_url='/sina/topology/available/node',
+                                                                  node_id=289)
+
+                        # if status_snmp_shelf_a == 0 or status_rest_shelf_a == 0:
+
+                        create_status_snmp_shelf_rest_shelf(status_snmp_shelf_a, status_rest_shelf_a)
+                        getter_information_status_app_shelf(c1, 1)
+                        getter_information_status_service_south_bound(c1)
+                        getter_information_shelf_log_snmp(c1, 1)
+                        getter_information_show_cards_of_shelf(c1, 1)
+                        getter_information_log_service_south_bound(c1)
+                        getter_information_rest_staus_node(c1)
+                    except Exception as e:
+                        print(e)
+
+                    try:
+                        status_snmp_shelf_b = writer_request_snmp(c1, "172.17.40.1", oid_is_alive_node, 296)
+                        status_rest_shelf_b = create_request_rest(c1, req_url='/sina/topology/available/node',
+                                                                  node_id=296)
+
+                        # if status_snmp_shelf_b == 0 or status_rest_shelf_b == 0:
+
+                        create_status_snmp_shelf_rest_shelf(status_snmp_shelf_b, status_rest_shelf_b)
+                        getter_information_status_app_shelf(c1, 2)
+                        getter_information_status_service_south_bound(c1)
+                        getter_information_shelf_log_snmp(c1, 2)
+                        getter_information_show_cards_of_shelf(c1, 2)
+                        getter_information_log_service_south_bound(c1)
+                    except Exception as e:
+                        print(e)
+
+                    text = "********************************************** END BATCH **********************************************\n"
+                    loger_file3.write(text)
+
+                time.sleep(10)
+                loger_file.close()
+                loger_file2.close()
+                loger_file3.close()
+            except Exception as e:
+                print(e)
+        c1.delete_zone_node()
+        break
